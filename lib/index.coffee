@@ -23,6 +23,9 @@ module.exports =
     atom.workspace.registerOpener (uri) ->
       createSettingsView({uri}) if uri is configUri
 
+    atom.workspaceView.command 'settings-view:preferences', ->
+      openPanel('General')
+
     atom.workspaceView.command 'settings-view:open', ->
       openPanel('General')
 
