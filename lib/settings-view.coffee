@@ -165,6 +165,7 @@ class SettingsView extends ScrollView
       @panelToShow = null
     else
       @panelToShow = name
+    this.trigger 'title-changed'
 
   filterPackages: ->
     filterText = @filterEditor.getEditor().getText()
@@ -182,7 +183,12 @@ class SettingsView extends ScrollView
     @panelPackages.find("li[name=\"#{name}\"]").remove()
 
   getTitle: ->
-    "Settings"
+    if not @activePanelName
+      "Settings"
+    else if @activePanelName in ['Settings', 'Keybindings', 'Packages', 'Themes']
+      @activePanelName
+    else
+      "Settings: " + @activePanelName
 
   getUri: ->
     @uri
