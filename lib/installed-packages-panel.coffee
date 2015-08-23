@@ -8,7 +8,7 @@ ErrorView = require './error-view'
 
 List = require './list'
 ListView = require './list-view'
-{ownerFromRepository} = require './utils'
+{ownerFromRepository, packageComparatorAscending} = require './utils'
 
 module.exports =
 class InstalledPackagesPanel extends View
@@ -56,7 +56,6 @@ class InstalledPackagesPanel extends View
               @div class: 'alert alert-info loading-area icon icon-hourglass', "Loading packages…"
 
   initialize: (@packageManager) ->
-    @packageViews = []
     @items =
       dev: new List('name')
       core: new List('name')
@@ -71,7 +70,7 @@ class InstalledPackagesPanel extends View
     @filterEditor.getModel().onDidStopChanging => @matchPackages()
 
     @packageManagerSubscriptions = new CompositeDisposable
-    @packageManagerSubscriptions.add @packageManager.on 'package-install-failed theme-install-failed package-uninstall-failed theme-uninstall-failed package-update-failed theme-update-failed', (pack, error) =>
+    @packageManagerSubscriptions.add @packageManager.on 'package-install-failed theme-install-failed package-uninstall-failed theme-uninstall-failed package-update-failed theme-update-failed', ({pack, error}) =>
       @updateErrors.append(new ErrorView(@packageManager, error))
 
     loadPackagesTimeout = null
@@ -81,6 +80,7 @@ class InstalledPackagesPanel extends View
         @loadPackages()
       , InstalledPackagesPanel.loadPackagesDelay
 
+    @handleEvents()
     @loadPackages()
 
   focus: ->
@@ -105,24 +105,10 @@ class InstalledPackagesPanel extends View
     packages
 
   sortPackages: (packages) ->
-    comparator = (left, right) ->
-      leftStatus = atom.packages.isPackageDisabled(left.name)
-      rightStatus = atom.packages.isPackageDisabled(right.name)
-      if leftStatus is rightStatus
-        if left.name > right.name
-          -1
-        else if left.name < right.name
-          1
-        else
-          0
-      else if leftStatus > rightStatus
-        -1
-      else
-        1
-    packages.dev.sort(comparator)
-    packages.core.sort(comparator)
-    packages.user.sort(comparator)
-    packages.deprecated.sort(comparator)
+    packages.dev.sort(packageComparatorAscending)
+    packages.core.sort(packageComparatorAscending)
+    packages.user.sort(packageComparatorAscending)
+    packages.deprecated.sort(packageComparatorAscending)
     packages
 
   loadPackages: ->
@@ -132,7 +118,6 @@ class InstalledPackagesPanel extends View
         packagesWithUpdates[name] = latestVersion
       @displayPackageUpdates(packagesWithUpdates)
 
-    @packageViews = []
     @packageManager.getInstalled()
       .then (packages) =>
         @packages = @sortPackages(@filterPackages(packages))
@@ -183,7 +168,7 @@ class InstalledPackagesPanel extends View
       allViews = @itemViews[packageType].getViews()
       activeViews = @itemViews[packageType].filterViews (pack) ->
         return true if text is ''
-        owner = pack.owner ? @ownerFromRepository(pack.repository)
+        owner = pack.owner ? ownerFromRepository(pack.repository)
         filterText = "#{pack.name} #{owner}"
         fuzzaldrin.score(filterText, text) > 0
 
@@ -219,3 +204,7 @@ class InstalledPackagesPanel extends View
   matchPackages: ->
     filterText = @filterEditor.getModel().getText()
     @filterPackageListByText(filterText)
+
+  handleEvents: ->
+    @on 'click', '.sub-section .icon-package', (e) ->
+      e.currentTarget.parentNode.classList.toggle('collapsed')

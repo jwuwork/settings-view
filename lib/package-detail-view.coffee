@@ -7,13 +7,14 @@ shell = require 'shell'
 {View} = require 'atom-space-pen-views'
 {CompositeDisposable} = require 'atom'
 
-ErrorView = require './error-view'
 PackageCard = require './package-card'
 PackageGrammarsView = require './package-grammars-view'
 PackageKeymapView = require './package-keymap-view'
 PackageReadmeView = require './package-readme-view'
 PackageSnippetsView = require './package-snippets-view'
 SettingsPanel = require './settings-panel'
+
+NORMALIZE_PACKAGE_DATA_README_ERROR = 'ERROR: No README data found!'
 
 module.exports =
 class PackageDetailView extends View
@@ -28,19 +29,21 @@ class PackageDetailView extends View
 
       @section class: 'section', =>
         @form class: 'section-container package-detail-view', =>
-          @div outlet: 'updateArea', class: 'alert alert-success package-update', =>
-            @span outlet: 'updateLabel', class: 'icon icon-squirrel update-message'
-            @span outlet: 'updateLink', class: 'alert-link update-link icon icon-cloud-download', 'Install'
-
           @div class: 'container package-container', =>
-            @div class: 'row', =>
-              @subview 'packageCard', new PackageCard(pack.metadata, packageManager, onSettingsView: true)
+            @div outlet: 'packageCardParent', class: 'row', =>
+              # Packages that need to be fetched will *only* have `name` set
+              if pack?.metadata and pack.metadata.owner
+                @subview 'packageCard', new PackageCard(pack.metadata, packageManager, onSettingsView: true)
+              else
+                @div outlet: 'loadingMessage', class: 'alert alert-info featured-message icon icon-hourglass', "Loading #{pack.name}\u2026"
 
-          @p outlet: 'packageRepo', class: 'link icon icon-repo repo-link'
+                @div outlet: 'errorMessage', class: 'alert alert-danger featured-message icon icon-hourglass hidden', "Failed to load #{pack.name} - try again later."
 
-          @p outlet: 'startupTime', class: 'text icon icon-dashboard native-key-bindings', tabindex: -1
 
-          @div outlet: 'buttons', class: 'btn-wrap-group', =>
+          @p outlet: 'packageRepo', class: 'link icon icon-repo repo-link hidden'
+          @p outlet: 'startupTime', class: 'text icon icon-dashboard native-key-bindings hidden', tabindex: -1
+
+          @div outlet: 'buttons', class: 'btn-wrap-group hidden', =>
             @button outlet: 'learnMoreButton', class: 'btn btn-default icon icon-link', 'View on Atom.io'
             @button outlet: 'issueButton', class: 'btn btn-default icon icon-bug', 'Report Issue'
             @button outlet: 'changelogButton', class: 'btn btn-default icon icon-squirrel', 'CHANGELOG'
@@ -54,18 +57,59 @@ class PackageDetailView extends View
   initialize: (@pack, @packageManager) ->
     @disposables = new CompositeDisposable()
     @loadPackage()
-    @activate()
+
+  completeInitialzation: ->
+    unless @packageCard # Had to load this from the network
+      @packageCard = new PackageCard(@pack.metadata, @packageManager, onSettingsView: true)
+      @loadingMessage.replaceWith(@packageCard)
+
+    @packageRepo.removeClass('hidden')
+    @startupTime.removeClass('hidden')
+    @buttons.removeClass('hidden')
+    @activateConfig()
     @populate()
     @handleButtonEvents()
     @updateFileButtons()
-    @checkForUpdate()
     @subscribeToPackageManager()
+    @renderReadme()
 
   loadPackage: ->
     if loadedPackage = atom.packages.getLoadedPackage(@pack.name)
       @pack = loadedPackage
+      @completeInitialzation()
+    else
+      # If the package metadata in `@pack` isn't complete, hit the network.
+      unless @pack.metadata? and @pack.metadata.owner
+        @fetchPackage()
+      else
+        @completeInitialzation()
 
-  activate: ->
+  fetchPackage: ->
+    @showLoadingMessage()
+    @packageManager.getClient().package @pack.name, (err, packageData) =>
+      if err
+        @hideLoadingMessage()
+        @showErrorMessage()
+      else
+        @pack = packageData
+        # TODO: this should match Package.loadMetadata from core, but this is
+        # an acceptable hacky workaround
+        @pack.metadata = _.clone(@pack)
+        @completeInitialzation()
+
+  showLoadingMessage: ->
+    @loadingMessage.removeClass('hidden')
+
+  hideLoadingMessage: ->
+    @loadingMessage.addClass('hidden')
+
+  showErrorMessage: ->
+    @errorMessage.removeClass('hidden')
+
+  hideErrorMessage: ->
+    @errorMessage.addClass('hidden')
+
+  activateConfig: ->
     # Package.activateConfig() is part of the Private package API and should not be used outside of core.
     if atom.packages.isPackageLoaded(@pack.name) and not atom.packages.isPackageActive(@pack.name)
       @pack.activateConfig()
@@ -74,11 +118,9 @@ class PackageDetailView extends View
     @disposables.dispose()
 
   beforeShow: (opts) ->
-    if opts?.back
-      @breadcrumb.text(opts.back).on 'click', =>
-        @parents('.settings-view').view()?.showPanel(opts.back)
-    else
-      @breadcrumbContainer.hide()
+    opts.back ?= 'Install'
+    @breadcrumb.text(opts.back).on 'click', =>
+      @parents('.settings-view').view()?.showPanel(opts.back)
 
   populate: ->
     @title.text("#{_.undasherize(_.uncamelcase(@pack.name))}")
@@ -96,7 +138,7 @@ class PackageDetailView extends View
   updateInstalledState: ->
     @sections.empty()
     @updateFileButtons()
-    @activate()
+    @activateConfig()
 
     if @isInstalled()
       @sections.append(new SettingsPanel(@pack.name, {includeTitle: false}))
@@ -113,28 +155,39 @@ class PackageDetailView extends View
 
     @openButton.hide() if atom.packages.isBundledPackage(@pack.name)
 
-    readme = if @pack.metadata.readme then @pack.metadata.readme else null
+    @renderReadme()
+
+  renderReadme: ->
+    if @pack.metadata.readme and @pack.metadata.readme.trim() isnt NORMALIZE_PACKAGE_DATA_README_ERROR
+      readme = @pack.metadata.readme
+    else
+      readme = null
+
     if @readmePath and not readme
       readme = fs.readFileSync(@readmePath, encoding: 'utf8')
 
-    @sections.append(new PackageReadmeView(readme))
+    readmeView = new PackageReadmeView(readme)
+    if @readmeSection
+      @readmeSection.replaceWith(readmeView)
+    else
+      @readmeSection = readmeView
+      @sections.append(readmeView)
 
   subscribeToPackageManager: ->
-    @disposables.add @packageManager.on 'theme-installed package-installed', (pack) =>
+    @disposables.add @packageManager.on 'theme-installed package-installed', ({pack}) =>
       return unless @pack.name is pack.name
 
       @loadPackage()
       @updateInstalledState()
 
-    @disposables.add @packageManager.on 'theme-uninstalled package-uninstalled', (pack) =>
+    @disposables.add @packageManager.on 'theme-uninstalled package-uninstalled', ({pack}) =>
       @updateInstalledState() if @pack.name is pack.name
 
-    @disposables.add @packageManager.on 'theme-updated package-updated', (pack) =>
+    @disposables.add @packageManager.on 'theme-updated package-updated', ({pack}) =>
       return unless @pack.name is pack.name
 
       @loadPackage()
       @updateFileButtons()
-      @updateArea.hide()
       @populate()
 
   handleButtonEvents: ->
@@ -190,32 +243,6 @@ class PackageDetailView extends View
     loadTime = @pack.loadTime ? 0
     activateTime = @pack.activateTime ? 0
     loadTime + activateTime
-
-  installUpdate: ->
-    return if @updateLink.prop('disabled')
-    return unless @availableVersion
-
-    @updateLink.prop('disabled', true)
-    @updateLink.text('Installing\u2026')
-
-    @packageManager.update @pack, @availableVersion, (error) =>
-      if error?
-        @updateLink.prop('disabled', false)
-        @updateLink.text('Install')
-        @errors.append(new ErrorView(@packageManager, error))
-
-  checkForUpdate: ->
-    @updateArea.hide()
-    return if atom.packages.isBundledPackage(@pack.name)
-
-    @updateLink.on 'click', => @installUpdate()
-
-    @packageManager.getOutdated().then (packages) =>
-      for pack in packages when pack.name is @pack.name
-        if @packageManager.canUpgrade(@pack, pack.latestVersion)
-          @availableVersion = pack.latestVersion
-          @updateLabel.text("Version #{@availableVersion} is now available!")
-          @updateArea.show()
 
   # Even though the title of this view is hilariously "PackageDetailView",
   # the package might not be installed.

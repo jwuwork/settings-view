@@ -18,12 +18,18 @@ class PackageManager
     @client ?= new Client(this)
 
   isPackageInstalled: (packageName) ->
-    if atom.packages.isPackageLoaded(packageName) or atom.packages.isPackageDisabled(packageName)
+    if atom.packages.isPackageLoaded(packageName)
       true
     else if packageNames = @getAvailablePackageNames()
       packageNames.indexOf(packageName) > -1
     else
       false
+
+  packageHasSettings: (packageName) ->
+    pack = atom.packages.getLoadedPackage(packageName)
+    pack.activateConfig() if pack? and not atom.packages.isPackageActive(packageName)
+    schema = atom.config.getSchema(packageName)
+    schema? and (schema.type isnt 'any')
 
   runCommand: (args, callback) ->
     command = atom.packages.getApmPath()
@@ -235,7 +241,7 @@ class PackageManager
         error.stderr = stderr
         onError(error)
 
-    @emitter.emit 'package-updating', pack
+    @emitter.emit('package-updating', {pack})
     apmProcess = @runCommand(args, exit)
     handleProcessErrors(apmProcess, errorMessage, onError)
 
@@ -268,6 +274,7 @@ class PackageManager
         else
           atom.packages.loadPackage(name)
 
+        @addPackageToAvailablePackageNames(name)
         callback?()
         @emitPackageEvent 'installed', pack
       else
@@ -295,6 +302,8 @@ class PackageManager
     apmProcess = @runCommand ['uninstall', '--hard', name], (code, stdout, stderr) =>
       if code is 0
         @unload(name)
+        @removePackageFromAvailablePackageNames(name)
+        @removePackageNameFromDisabledPackages(name)
         callback?()
         @emitPackageEvent 'uninstalled', pack
       else
@@ -307,7 +316,7 @@ class PackageManager
 
   installAlternative: (pack, alternativePackageName, callback) ->
     eventArg = {pack, alternative: alternativePackageName}
-    @emitter.emit 'package-installing-alternative', eventArg
+    @emitter.emit('package-installing-alternative', eventArg)
 
     uninstallPromise = new Promise (resolve, reject) =>
       @uninstall pack, (error) ->
@@ -319,11 +328,12 @@ class PackageManager
 
     Promise.all([uninstallPromise, installPromise]).then =>
       callback(null, eventArg)
-      @emitter.emit 'package-installed-alternative', eventArg
+      @emitter.emit('package-installed-alternative', eventArg)
     .catch (error) =>
       console.error error.message, error.stack
       callback(error, eventArg)
-      @emitter.emit 'package-install-alternative-failed', eventArg, error
+      eventArg.error = error
+      @emitter.emit('package-install-alternative-failed', eventArg)
 
   canUpgrade: (installedPackage, availableVersion) ->
     return false unless installedPackage?
@@ -343,7 +353,7 @@ class PackageManager
     if repoUrl.match 'git@github'
       repoName = repoUrl.split(':')[1]
       repoUrl = "https://github.com/#{repoName}"
-    repoUrl.replace(/\.git$/, '').replace(/\/+$/, '')
+    repoUrl.replace(/\.git$/, '').replace(/\/+$/, '').replace(/^git\+/, '')
 
   checkNativeBuildTools: ->
     deferred = Q.defer()
@@ -360,11 +370,26 @@ class PackageManager
 
     deferred.promise
 
+  removePackageNameFromDisabledPackages: (packageName) ->
+    atom.config.removeAtKeyPath('core.disabledPackages', packageName)
+
   cacheAvailablePackageNames: (packages) ->
     @availablePackageCache = []
     for packageType in ['core', 'user', 'dev']
+      continue unless packages[packageType]?
       packageNames = (pack.name for pack in packages[packageType])
       @availablePackageCache.push(packageNames...)
+    @availablePackageCache
+
+  addPackageToAvailablePackageNames: (packageName) ->
+    @availablePackageCache ?= []
+    @availablePackageCache.push(packageName) if @availablePackageCache.indexOf(packageName) < 0
+    @availablePackageCache
+
+  removePackageFromAvailablePackageNames: (packageName) ->
+    @availablePackageCache ?= []
+    index = @availablePackageCache.indexOf(packageName)
+    @availablePackageCache.splice(index, 1) if index > -1
     @availablePackageCache
 
   getAvailablePackageNames: ->
@@ -383,7 +408,7 @@ class PackageManager
   emitPackageEvent: (eventName, pack, error) ->
     theme = pack.theme ? pack.metadata?.theme
     eventName = if theme then "theme-#{eventName}" else "package-#{eventName}"
-    @emitter.emit eventName, pack, error
+    @emitter.emit(eventName, {pack, error})
 
   on: (selectors, callback) ->
     subscriptions = new CompositeDisposable
